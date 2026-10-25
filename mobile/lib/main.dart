@@ -471,7 +471,7 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   late final RemoteConnection remote;
   final draft = TextEditingController();
   final surface = GlobalKey<_TouchSurfaceState>();
-  bool keyboard = true, sending = false;
+  bool keyboard = false, sending = false;
   bool leftHeld = false;
   final List<({String? text, String? key})> outgoing = [];
   double sensitivity = 1.6;
@@ -594,6 +594,13 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
     }
   }
 
+  void hideKeyboard() {
+    if (!keyboard) return;
+    FocusScope.of(context).unfocus();
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    setState(() => keyboard = false);
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -642,6 +649,7 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                       remote: remote,
                       sensitivity: sensitivity,
                       leftHeld: leftHeld,
+                      onTouch: hideKeyboard,
                     ),
                   ),
                 ),
@@ -675,8 +683,11 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                       IconButton.filledTonal(
                         tooltip: '文字输入',
                         onPressed: () {
-                          setState(() => keyboard = !keyboard);
-                          if (!keyboard) FocusScope.of(context).unfocus();
+                          if (keyboard) {
+                            hideKeyboard();
+                          } else {
+                            setState(() => keyboard = true);
+                          }
                         },
                         icon: Icon(
                           keyboard ? Icons.keyboard_hide : Icons.keyboard,
@@ -884,10 +895,12 @@ class TouchSurface extends StatefulWidget {
     required this.remote,
     required this.sensitivity,
     this.leftHeld = false,
+    this.onTouch,
   });
   final RemoteConnection remote;
   final double sensitivity;
   final bool leftHeld;
+  final VoidCallback? onTouch;
   @override
   State<TouchSurface> createState() => _TouchSurfaceState();
 }
@@ -955,6 +968,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
   }
 
   void down(PointerDownEvent event) {
+    widget.onTouch?.call();
     if (!widget.remote.connected) return;
     if (points.isEmpty) {
       started = DateTime.now();

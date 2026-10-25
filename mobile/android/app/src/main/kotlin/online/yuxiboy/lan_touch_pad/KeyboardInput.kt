@@ -80,22 +80,65 @@ private class KeyboardInputView(context: Context, id: Int, args: Map<*, *>?, mes
             } else if (call.method == "setConnected") {
                 connected = call.arguments == true
                 result.success(null)
+            } else if (call.method == "showKeyboard") {
+                editor.showKeyboard()
+                result.success(null)
             } else result.notImplemented()
         }
-        editor.post {
-            if (!disposed) {
-                editor.requestFocus()
-                (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(editor, InputMethodManager.SHOW_IMPLICIT)
-            }
-        }
+        editor.showKeyboard()
     }
 
     override fun getView(): View = editor
-    override fun dispose() { disposed = true; commands.setMethodCallHandler(null); editor.clearFocus() }
+    override fun dispose() { disposed = true; commands.setMethodCallHandler(null); editor.hideKeyboard() }
 }
 
 private class RemoteEditText(context: Context, private val submit: () -> Unit, private val remoteKey: (String) -> Unit) : EditText(context) {
     private var deleting = false
+    private var keyboardRequested = false
+    private var showAttempts = 0
+    private val showInput = object : Runnable {
+        override fun run() {
+            if (!keyboardRequested || !isAttachedToWindow || !hasWindowFocus()) return
+            requestFocus()
+            val input = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            if (input.showSoftInput(this@RemoteEditText, InputMethodManager.SHOW_IMPLICIT)) {
+                keyboardRequested = false
+            } else if (++showAttempts < 5) {
+                postDelayed(this, 100)
+            }
+        }
+    }
+
+    fun showKeyboard() {
+        keyboardRequested = true
+        showAttempts = 0
+        requestFocus()
+        removeCallbacks(showInput)
+        post(showInput)
+    }
+
+    fun hideKeyboard() {
+        keyboardRequested = false
+        removeCallbacks(showInput)
+        (context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(windowToken, 0)
+        clearFocus()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        if (keyboardRequested) post(showInput)
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        if (hasWindowFocus && keyboardRequested) post(showInput)
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(showInput)
+        super.onDetachedFromWindow()
+    }
+
     private fun composing(): Boolean = BaseInputConnection.getComposingSpanStart(text) >= 0
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {

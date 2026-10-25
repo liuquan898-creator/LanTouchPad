@@ -93,6 +93,7 @@ class _KeyboardInputState extends State<KeyboardInput> {
           view = MethodChannel('online.yuxiboy.lantouchpad/keyboard-input/$id');
           view!.invokeMethod<void>('setText', widget.controller.text);
           view!.invokeMethod<void>('setConnected', widget.canSend);
+          view!.invokeMethod<void>('showKeyboard');
         },
       ),
     );
