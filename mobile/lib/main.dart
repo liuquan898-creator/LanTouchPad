@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'keyboard_input.dart';
@@ -913,7 +914,9 @@ class _TouchSurfaceState extends State<TouchSurface> {
   bool dragging = false;
   bool externalDrag = false;
   int maxFingers = 0;
-  DateTime started = DateTime.now();
+  Duration started = Duration.zero;
+  Duration? lastTapUp;
+  Offset? lastTapPosition;
   @override
   void initState() {
     super.initState();
@@ -958,6 +961,15 @@ class _TouchSurfaceState extends State<TouchSurface> {
     dragging = false;
     externalDrag = false;
     maxFingers = 0;
+    lastTapUp = null;
+    lastTapPosition = null;
+  }
+
+  void startDrag() {
+    flushInput();
+    dragging = true;
+    widget.remote.send({'type': 'button', 'button': 'left', 'down': true});
+    HapticFeedback.selectionClick();
   }
 
   @override
@@ -971,26 +983,33 @@ class _TouchSurfaceState extends State<TouchSurface> {
     widget.onTouch?.call();
     if (!widget.remote.connected) return;
     if (points.isEmpty) {
-      started = DateTime.now();
+      started = event.timeStamp;
       distance = 0;
       maxFingers = 0;
       externalDrag = widget.leftHeld;
-      hold = Timer(const Duration(milliseconds: 450), () {
-        if (!externalDrag &&
-            points.length == 1 &&
-            distance < 8 &&
-            maxFingers == 1) {
-          flushInput();
-          dragging = true;
-          widget.remote.send({
-            'type': 'button',
-            'button': 'left',
-            'down': true,
-          });
-          HapticFeedback.selectionClick();
-          if (mounted) setState(() {});
-        }
-      });
+      final gap = lastTapUp == null ? null : started - lastTapUp!;
+      final doubleTap =
+          !externalDrag &&
+          gap != null &&
+          gap >= Duration.zero &&
+          gap <= kDoubleTapTimeout &&
+          lastTapPosition != null &&
+          (event.localPosition - lastTapPosition!).distance <= kDoubleTapSlop;
+      lastTapUp = null;
+      lastTapPosition = null;
+      if (doubleTap) {
+        startDrag();
+      } else {
+        hold = Timer(const Duration(milliseconds: 450), () {
+          if (!externalDrag &&
+              points.length == 1 &&
+              distance < 8 &&
+              maxFingers == 1) {
+            startDrag();
+            if (mounted) setState(() {});
+          }
+        });
+      }
     }
     points[event.pointer] = event.localPosition;
     if (points.length > maxFingers) maxFingers = points.length;
@@ -1041,11 +1060,15 @@ class _TouchSurfaceState extends State<TouchSurface> {
           !cancel &&
           maxFingers <= 2 &&
           distance < 10 &&
-          DateTime.now().difference(started).inMilliseconds < 400) {
+          event.timeStamp - started < const Duration(milliseconds: 400)) {
         widget.remote.send({
           'type': 'click',
           'button': maxFingers == 2 ? 'right' : 'left',
         });
+        if (maxFingers == 1) {
+          lastTapUp = event.timeStamp;
+          lastTapPosition = event.localPosition;
+        }
       }
       dragging = false;
       externalDrag = false;
