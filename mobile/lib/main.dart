@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'keyboard_input.dart';
 
 const discoveryPort = 45831, controlPort = 45832;
 const platform = MethodChannel('online.yuxiboy.lantouchpad/device');
@@ -459,8 +460,9 @@ class RemoteConnection extends ChangeNotifier {
 }
 
 class ControlPage extends StatefulWidget {
-  const ControlPage({super.key, required this.device});
+  const ControlPage({super.key, required this.device, this.connection});
   final PcDevice device;
+  final RemoteConnection? connection;
   @override
   State<ControlPage> createState() => _ControlPageState();
 }
@@ -468,19 +470,27 @@ class ControlPage extends StatefulWidget {
 class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   late final RemoteConnection remote;
   final draft = TextEditingController();
-  bool keyboard = false, sending = false;
+  final surface = GlobalKey<_TouchSurfaceState>();
+  bool keyboard = true, sending = false;
+  bool leftHeld = false;
+  final List<({String? text, String? key})> outgoing = [];
   double sensitivity = 1.6;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    remote = RemoteConnection(widget.device)..onError = showError;
+    remote = (widget.connection ?? RemoteConnection(widget.device))
+      ..onError = showError;
     remote.addListener(update);
     remote.connect();
   }
 
   void update() {
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() {
+        if (!remote.connected) leftHeld = false;
+      });
+    }
   }
 
   void showError(String text) {
@@ -511,16 +521,31 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   }
 
   Future<void> sendText() async {
-    if (draft.text.isEmpty || sending || !remote.connected) return;
-    final text = draft.text;
+    if (draft.text.isEmpty || !remote.connected) return;
+    outgoing.add((text: draft.text, key: null));
+    draft.clear();
+    if (sending) return;
     setState(() => sending = true);
-    final success = await remote.sendText(text);
-    if (!mounted) return;
-    setState(() {
-      sending = false;
-      if (success && draft.text == text) draft.clear();
-    });
-    if (!success) showError('未收到输入确认，草稿已保留；请检查电脑内容后再发送');
+    while (outgoing.isNotEmpty) {
+      final command = outgoing.first;
+      if (command.key != null) {
+        remote.send({'type': 'key', 'key': command.key});
+        outgoing.removeAt(0);
+        continue;
+      }
+      final success = await remote.sendText(command.text!);
+      if (!mounted) return;
+      if (!success) {
+        draft.text =
+            outgoing.map((command) => command.text ?? '').join() + draft.text;
+        outgoing.clear();
+        setState(() => sending = false);
+        showError('未收到输入确认，草稿已保留；请检查电脑内容后再发送');
+        return;
+      }
+      outgoing.removeAt(0);
+    }
+    setState(() => sending = false);
   }
 
   Future<void> settings() async {
@@ -561,7 +586,14 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
     );
   }
 
-  void key(String name) => remote.send({'type': 'key', 'key': name});
+  void key(String name) {
+    if (sending) {
+      outgoing.add((text: null, key: name));
+    } else {
+      remote.send({'type': 'key', 'key': name});
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
@@ -606,8 +638,10 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                     child: TouchSurface(
+                      key: surface,
                       remote: remote,
                       sensitivity: sensitivity,
+                      leftHeld: leftHeld,
                     ),
                   ),
                 ),
@@ -621,6 +655,11 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                           button: 'left',
                           icon: Icons.mouse_outlined,
                           label: '左键',
+                          onHold: (held) => setState(() => leftHeld = held),
+                          beforeRelease: () =>
+                              surface.currentState?.flushInput(),
+                          onMove: (delta) =>
+                              surface.currentState?.moveBy(delta * sensitivity),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -654,17 +693,11 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                         Row(
                           children: [
                             Expanded(
-                              child: TextField(
+                              child: KeyboardInput(
                                 controller: draft,
-                                minLines: 1,
-                                maxLines: 3,
-                                maxLength: 4000,
-                                decoration: const InputDecoration(
-                                  hintText: '输入文字',
-                                  counterText: '',
-                                ),
-                                textInputAction: TextInputAction.newline,
-                                enabled: !sending,
+                                canSend: remote.connected,
+                                onSend: sendText,
+                                onKey: key,
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -760,38 +793,85 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   );
 }
 
-class MouseButton extends StatelessWidget {
+class MouseButton extends StatefulWidget {
   const MouseButton({
     super.key,
     required this.remote,
     required this.button,
     required this.icon,
     required this.label,
+    this.onHold,
+    this.beforeRelease,
+    this.onMove,
   });
   final RemoteConnection remote;
   final String button, label;
   final IconData icon;
+  final ValueChanged<bool>? onHold;
+  final VoidCallback? beforeRelease;
+  final ValueChanged<Offset>? onMove;
+  @override
+  State<MouseButton> createState() => _MouseButtonState();
+}
+
+class _MouseButtonState extends State<MouseButton> {
+  final pointers = <int>{};
+  void finish(PointerEvent event, bool canceled) {
+    if (!pointers.remove(event.pointer) || pointers.isNotEmpty) return;
+    widget.beforeRelease?.call();
+    widget.remote.send({
+      'type': 'button',
+      'button': widget.button,
+      'down': false,
+      'copy': !canceled,
+    });
+    widget.onHold?.call(false);
+    setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(MouseButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!widget.remote.connected) pointers.clear();
+  }
+
   @override
   Widget build(BuildContext context) => Listener(
-    onPointerDown: (_) =>
-        remote.send({'type': 'button', 'button': button, 'down': true}),
-    onPointerUp: (_) =>
-        remote.send({'type': 'button', 'button': button, 'down': false}),
-    onPointerCancel: (_) =>
-        remote.send({'type': 'button', 'button': button, 'down': false}),
+    onPointerDown: (event) {
+      if (!widget.remote.connected) return;
+      pointers.add(event.pointer);
+      if (pointers.length == 1) {
+        widget.remote.send({
+          'type': 'button',
+          'button': widget.button,
+          'down': true,
+        });
+        widget.onHold?.call(true);
+      }
+      setState(() {});
+    },
+    onPointerMove: (event) {
+      if (pointers.contains(event.pointer)) widget.onMove?.call(event.delta);
+    },
+    onPointerUp: (event) => finish(event, false),
+    onPointerCancel: (event) => finish(event, true),
     child: Semantics(
       button: true,
-      label: label,
+      label: widget.label,
       child: Container(
         height: 52,
         decoration: BoxDecoration(
-          color: const Color(0xffe2e9ec),
+          color: pointers.isEmpty
+              ? const Color(0xffe2e9ec)
+              : const Color(0xffe5c388),
           borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
         child: Icon(
-          icon,
-          color: remote.connected ? const Color(0xff29464c) : Colors.grey,
+          widget.icon,
+          color: widget.remote.connected
+              ? const Color(0xff29464c)
+              : Colors.grey,
         ),
       ),
     ),
@@ -803,9 +883,11 @@ class TouchSurface extends StatefulWidget {
     super.key,
     required this.remote,
     required this.sensitivity,
+    this.leftHeld = false,
   });
   final RemoteConnection remote;
   final double sensitivity;
+  final bool leftHeld;
   @override
   State<TouchSurface> createState() => _TouchSurfaceState();
 }
@@ -816,6 +898,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
   Offset movement = Offset.zero;
   double scroll = 0, distance = 0;
   bool dragging = false;
+  bool externalDrag = false;
   int maxFingers = 0;
   DateTime started = DateTime.now();
   @override
@@ -831,6 +914,10 @@ class _TouchSurfaceState extends State<TouchSurface> {
   void didUpdateWidget(TouchSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!widget.remote.connected) reset();
+    if (widget.leftHeld && points.isNotEmpty) {
+      externalDrag = true;
+      hold?.cancel();
+    }
   }
 
   void flushInput() {
@@ -846,12 +933,17 @@ class _TouchSurfaceState extends State<TouchSurface> {
     scroll = 0;
   }
 
+  void moveBy(Offset delta) {
+    movement += delta;
+  }
+
   void reset() {
     hold?.cancel();
     points.clear();
     movement = Offset.zero;
     scroll = 0;
     dragging = false;
+    externalDrag = false;
     maxFingers = 0;
   }
 
@@ -868,8 +960,12 @@ class _TouchSurfaceState extends State<TouchSurface> {
       started = DateTime.now();
       distance = 0;
       maxFingers = 0;
+      externalDrag = widget.leftHeld;
       hold = Timer(const Duration(milliseconds: 450), () {
-        if (points.length == 1 && distance < 8 && maxFingers == 1) {
+        if (!externalDrag &&
+            points.length == 1 &&
+            distance < 8 &&
+            maxFingers == 1) {
           flushInput();
           dragging = true;
           widget.remote.send({
@@ -887,7 +983,12 @@ class _TouchSurfaceState extends State<TouchSurface> {
     if (points.length > 1) {
       hold?.cancel();
       if (dragging) {
-        widget.remote.send({'type': 'button', 'button': 'left', 'down': false});
+        widget.remote.send({
+          'type': 'button',
+          'button': 'left',
+          'down': false,
+          'copy': false,
+        });
         dragging = false;
       }
     }
@@ -916,8 +1017,14 @@ class _TouchSurfaceState extends State<TouchSurface> {
     if (points.isEmpty) {
       flushInput();
       if (dragging) {
-        widget.remote.send({'type': 'button', 'button': 'left', 'down': false});
-      } else if (!cancel &&
+        widget.remote.send({
+          'type': 'button',
+          'button': 'left',
+          'down': false,
+          'copy': !cancel,
+        });
+      } else if (!externalDrag &&
+          !cancel &&
           maxFingers <= 2 &&
           distance < 10 &&
           DateTime.now().difference(started).inMilliseconds < 400) {
@@ -927,6 +1034,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
         });
       }
       dragging = false;
+      externalDrag = false;
       maxFingers = 0;
     }
     setState(() {});
@@ -947,7 +1055,10 @@ class _TouchSurfaceState extends State<TouchSurface> {
           fit: StackFit.expand,
           children: [
             CustomPaint(
-              painter: SurfacePainter(points.values.toList(), dragging),
+              painter: SurfacePainter(
+                points.values.toList(),
+                dragging || widget.leftHeld,
+              ),
             ),
             if (!widget.remote.connected)
               const Center(

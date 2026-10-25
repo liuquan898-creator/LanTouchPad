@@ -22,5 +22,7 @@ try {
     & $Flutter build apk --release
     if ($LASTEXITCODE -ne 0) { throw 'APK build failed' }
     New-Item -ItemType Directory -Force (Join-Path $repo 'dist') | Out-Null
-    Copy-Item 'build\app\outputs\flutter-apk\app-release.apk' (Join-Path $repo 'dist\LanTouchPad-1.0.0.apk')
+    $versionLine = (Select-String -Path 'pubspec.yaml' -Pattern '^version:').Line
+    $version = ($versionLine -split ':',2)[1].Trim().Split('+')[0]
+    Copy-Item 'build\app\outputs\flutter-apk\app-release.apk' (Join-Path $repo "dist\LanTouchPad-$version.apk")
 } finally { Pop-Location }

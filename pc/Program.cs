@@ -1,7 +1,6 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using Microsoft.Win32;
 
 namespace LanTouchPad;
 
@@ -10,6 +9,8 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Contains("--enable-startup")) { Startup.Set(true); return; }
+        if (args.Contains("--disable-startup")) { Startup.Set(false); return; }
         using var mutex = new Mutex(true, "Local\\LanTouchPad.Desktop", out var first);
         using var show = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\LanTouchPad.Show");
         if (!first) { if (!args.Contains("--background")) show.Set(); return; }
@@ -17,18 +18,6 @@ internal static class Program
         using var form = new MainForm(args.Contains("--background"));
         var registration = ThreadPool.RegisterWaitForSingleObject(show, (_, _) => form.ShowFromSignal(), null, Timeout.Infinite, false);
         try { Application.Run(form); } finally { registration.Unregister(null); }
-    }
-}
-
-internal static class Startup
-{
-    private const string Key = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    public static bool Enabled => Registry.CurrentUser.OpenSubKey(Key)?.GetValue("LanTouchPad") != null;
-    public static void Set(bool value)
-    {
-        using var key = Registry.CurrentUser.CreateSubKey(Key);
-        if (value) key.SetValue("LanTouchPad", $"\"{Environment.ProcessPath}\" --background");
-        else key.DeleteValue("LanTouchPad", false);
     }
 }
 
@@ -45,7 +34,7 @@ internal sealed class MainForm : Form
 
     public MainForm(bool background)
     {
-        Text = "LanTouchPad";
+        Text = "LanTouchPad 1.0.1";
         ClientSize = new Size(560, 390);
         MinimumSize = new Size(560, 430);
         Font = new Font("Microsoft YaHei UI", 10);

@@ -99,6 +99,7 @@ void main() {
       'type': 'button',
       'button': 'left',
       'down': false,
+      'copy': false,
     });
     await tester.pumpWidget(const SizedBox());
     remote.dispose();
@@ -112,4 +113,83 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     remote.dispose();
   });
+
+  testWidgets(
+    'holding left button allows one-finger drag and flushes before release',
+    (tester) async {
+      final remote = RecordingConnection();
+      final surface = GlobalKey<State<TouchSurface>>();
+      var held = false;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: StatefulBuilder(
+            builder: (context, update) => Scaffold(
+              body: Column(
+                children: [
+                  Expanded(
+                    child: TouchSurface(
+                      key: surface,
+                      remote: remote,
+                      sensitivity: 1,
+                      leftHeld: held,
+                    ),
+                  ),
+                  MouseButton(
+                    remote: remote,
+                    button: 'left',
+                    icon: Icons.mouse,
+                    label: '左键',
+                    onHold: (value) => update(() => held = value),
+                    onMove: (delta) => remote.send({
+                      'type': 'move',
+                      'dx': delta.dx,
+                      'dy': delta.dy,
+                    }),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+      final finger = await tester.startGesture(
+        tester.getCenter(find.byType(MouseButton)),
+      );
+      await tester.pump();
+      await finger.moveBy(const Offset(50, -25));
+      await finger.up();
+      expect(remote.messages.first, {
+        'type': 'button',
+        'button': 'left',
+        'down': true,
+      });
+      expect(remote.messages.any((m) => m['type'] == 'move'), isTrue);
+      expect(remote.messages.last, {
+        'type': 'button',
+        'button': 'left',
+        'down': false,
+        'copy': true,
+      });
+      expect(remote.messages.any((m) => m['type'] == 'click'), isFalse);
+      remote.messages.clear();
+      final buttonFinger = await tester.startGesture(
+        tester.getCenter(find.byType(MouseButton)),
+        pointer: 2,
+      );
+      await tester.pump();
+      final padFinger = await tester.startGesture(
+        const Offset(100, 100),
+        pointer: 3,
+      );
+      await padFinger.moveBy(const Offset(60, 20));
+      await tester.pump(const Duration(milliseconds: 20));
+      await padFinger.up();
+      expect(remote.messages.where((m) => m['type'] == 'button').length, 1);
+      expect(remote.messages.any((m) => m['type'] == 'click'), isFalse);
+      await buttonFinger.up();
+      expect(remote.messages.last['down'], false);
+      await tester.pumpWidget(const SizedBox());
+      remote.dispose();
+    },
+  );
 }

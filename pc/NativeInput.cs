@@ -19,7 +19,9 @@ internal sealed class NativeInput
     private struct KeyInput { public ushort VirtualKey, Scan; public uint Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] input, int size);
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     private double remainderX, remainderY, remainderScroll;
+    private double leftDragDistance;
     private readonly HashSet<string> held = [];
     public const string KeyNames = "enter,backspace,tab,escape,delete,left,right,up,down,home,end";
     private static readonly Dictionary<string, ushort> Keys = new()
@@ -37,7 +39,11 @@ internal sealed class NativeInput
         remainderX += Math.Clamp(x, -2000, 2000); remainderY += Math.Clamp(y, -2000, 2000);
         int dx = (int)remainderX, dy = (int)remainderY;
         remainderX -= dx; remainderY -= dy;
-        if (dx != 0 || dy != 0) Send(Mouse(1, dx, dy));
+        if (dx != 0 || dy != 0)
+        {
+            Send(Mouse(1, dx, dy));
+            if (held.Contains("left")) leftDragDistance += Math.Sqrt((double)dx * dx + (double)dy * dy);
+        }
     }
     public void Scroll(double value)
     {
@@ -45,12 +51,22 @@ internal sealed class NativeInput
         int delta = (int)remainderScroll; remainderScroll -= delta;
         if (delta != 0) Send(Mouse(0x0800, data: unchecked((uint)delta)));
     }
-    public void Button(string button, bool down)
+    public void Button(string button, bool down, bool copyAfterDrag = true)
     {
         if (button is not ("left" or "right")) throw new ArgumentException("Unknown button");
         if (down ? held.Contains(button) : !held.Contains(button)) return;
-        Send(Mouse(button == "left" ? (down ? 2u : 4u) : (down ? 8u : 16u)));
+        var events = new List<Input> { Mouse(button == "left" ? (down ? 2u : 4u) : (down ? 8u : 16u)) };
+        if (button == "left" && !down && copyAfterDrag && leftDragDistance >= 6)
+        {
+            // Keep mouse-up and Copy in the same ordered Windows input batch.
+            bool ctrlHeld = (GetAsyncKeyState(0x11) & 0x8000) != 0;
+            if (!ctrlHeld) events.Add(Key(0x11, 0, 0));
+            events.Add(Key(0x43, 0, 0)); events.Add(Key(0x43, 0, 2));
+            if (!ctrlHeld) events.Add(Key(0x11, 0, 2));
+        }
+        Send(events.ToArray());
         if (down) held.Add(button); else held.Remove(button);
+        if (button == "left") leftDragDistance = 0;
     }
     public void Click(string button) { Button(button, true); Button(button, false); }
     public void Press(string name)
@@ -71,7 +87,7 @@ internal sealed class NativeInput
     }
     public void ReleaseAll()
     {
-        foreach (var button in held.ToArray()) { try { Button(button, false); } catch { held.Remove(button); } }
-        remainderX = remainderY = remainderScroll = 0;
+        foreach (var button in held.ToArray()) { try { Button(button, false, false); } catch { held.Remove(button); } }
+        remainderX = remainderY = remainderScroll = leftDragDistance = 0;
     }
 }

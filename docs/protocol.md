@@ -15,7 +15,7 @@ Each WebSocket text message is one JSON object:
 | `move` | `dx`, `dy`: finite numbers | Relative movement, individual axes clamped to +/-2000, fractional movement retained |
 | `scroll` | `dy`: finite number | Windows wheel units, 120 units per notch, positive scrolls up |
 | `click` | `button`: `left` or `right` | Down followed by up |
-| `button` | `button`, `down`: boolean | Hold or release a button |
+| `button` | `button`, `down`: boolean, optional `copy`: boolean | Hold or release a button. A completed left drag copies with Ctrl+C by default; `copy:false` suppresses copying on canceled gestures |
 | `release` | none | Release all held buttons and discard fractional deltas |
 | `key` | `key` | `enter`, `backspace`, `tab`, `escape`, `delete`, `left`, `right`, `up`, `down`, `home`, `end` |
 | `text` | `text`: string, `id`: string | At most 4000 UTF-16 code units; inject Unicode into the focused application |

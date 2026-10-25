@@ -8,6 +8,7 @@ using System.Text.Json;
 internal static class Program
 {
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
     private static int code;
     [STAThread]
@@ -16,7 +17,7 @@ internal static class Program
         Console.SetOut(new StreamWriter(Path.Combine(AppContext.BaseDirectory, "smoke-report.txt")) { AutoFlush = true });
         Console.SetError(Console.Out);
         ApplicationConfiguration.Initialize();
-        using var form = new Form { Text = "LanTouchPad input verification", Width = 600, Height = 320, StartPosition = FormStartPosition.CenterScreen };
+        using var form = new Form { Text = "LanTouchPad input verification - click here to start", Width = 600, Height = 320, StartPosition = FormStartPosition.CenterScreen, TopMost = true };
         var textbox = new TextBox { Multiline = true, Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 16) };
         form.Controls.Add(textbox);
         form.Shown += async (_, _) =>
@@ -24,7 +25,9 @@ internal static class Program
             try
             {
                 Console.WriteLine("Waiting for test window focus...");
-                for (int i = 0; i < 450 && Form.ActiveForm != form; i++) await Task.Delay(100);
+                for (int i = 0; i < 900 && GetForegroundWindow() != form.Handle; i++) await Task.Delay(100);
+                Check(GetForegroundWindow() == form.Handle, "test window is foreground");
+                form.TopMost = false;
                 textbox.Focus();
                 await Verify(form, textbox); Console.WriteLine("PASS: all desktop integration checks");
             }
@@ -34,6 +37,10 @@ internal static class Program
         Application.Run(form); return code;
     }
     private static void Check(bool result, string message) { if (!result) throw new Exception(message); Console.WriteLine("PASS: " + message); }
+    private static async Task WaitFor(Func<bool> condition)
+    {
+        for (int i = 0; i < 60 && !condition(); i++) await Task.Delay(50);
+    }
     private static async Task Send(ClientWebSocket socket, object data) => await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(data), WebSocketMessageType.Text, true, CancellationToken.None);
     private static async Task<JsonElement> Receive(ClientWebSocket socket)
     {
@@ -64,7 +71,7 @@ internal static class Program
 
         form.Activate(); SetForegroundWindow(form.Handle); textbox.Focus();
         await Task.Delay(350);
-        Check(Form.ActiveForm == form && textbox.Focused, "isolated input target has focus");
+        Check(GetForegroundWindow() == form.Handle && textbox.Focused, "isolated input target has focus");
         await Send(socket, new { type = "text", text = "中文 Hello", id = "1" });
         Check((await Receive(socket)).GetProperty("type").GetString() == "textAck", "text delivery acknowledged");
         await Task.Delay(150);
@@ -74,24 +81,80 @@ internal static class Program
         await Send(socket, new { type = "text", text = "\n第二行 😀", id = "2" }); await Receive(socket);
         await Task.Delay(150); Check(textbox.Text.Replace("\r", "") == "中文 Hell\n第二行 😀", "multiline and surrogate-pair Unicode input");
 
+        using (var modal = new Form { Text = "Modal input verification", Width = 420, Height = 200, StartPosition = FormStartPosition.CenterParent })
+        {
+            var modalText = new TextBox { Dock = DockStyle.Top };
+            modal.Controls.Add(modalText);
+            Exception? modalError = null;
+            modal.Shown += async (_, _) =>
+            {
+                try
+                {
+                    modal.Activate(); SetForegroundWindow(modal.Handle); modalText.Focus(); await Task.Delay(200);
+                    Check(GetForegroundWindow() == modal.Handle && modalText.Focused, "elevated modal target has focus");
+                    await Send(socket, new { type = "text", text = "modal input", id = "modal" });
+                    await Receive(socket); await Task.Delay(150);
+                    Check(modalText.Text == "modal input", "input reaches elevated modal dialog");
+                    var previousCursor = Cursor.Position;
+                    try
+                    {
+                        int modalClicks = 0;
+                        modalText.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) modalClicks++; };
+                        Cursor.Position = modalText.PointToScreen(new Point(20, 10));
+                        await Send(socket, new { type = "move", dx = 5, dy = 0 });
+                        await WaitFor(() => Cursor.Position != modalText.PointToScreen(new Point(20, 10)));
+                        Check(Cursor.Position != modalText.PointToScreen(new Point(20, 10)), "pointer moves over elevated modal dialog");
+                        await Send(socket, new { type = "click", button = "left" });
+                        await WaitFor(() => modalClicks > 0);
+                        Check(modalClicks == 1, $"click reaches elevated modal dialog (count={modalClicks})");
+                    }
+                    finally { Cursor.Position = previousCursor; }
+                }
+                catch (Exception error) { modalError = error; }
+                finally { modal.Close(); }
+            };
+            modal.ShowDialog(form);
+            if (modalError != null) throw modalError;
+            form.Activate(); textbox.Focus();
+        }
+
         var origin = Cursor.Position;
         try
         {
+            var clipboard = Clipboard.GetDataObject();
+            try
+            {
+                textbox.Text = "Select and automatically copy this text";
+                textbox.Select(0,0);
+                Cursor.Position = textbox.PointToScreen(new Point(3,10));
+                await Send(socket, new { type = "button", button = "left", down = true });
+                await Send(socket, new { type = "move", dx = 140, dy = 0 }); await Task.Delay(150);
+                await Send(socket, new { type = "button", button = "left", down = false }); await Task.Delay(250);
+                Check(textbox.SelectedText.Length > 0 && Clipboard.GetText() == textbox.SelectedText, "left drag selection automatically copies to clipboard");
+                var copied = Clipboard.GetText();
+                await Send(socket, new { type = "button", button = "left", down = true });
+                await Send(socket, new { type = "move", dx = 40, dy = 0 });
+                await Send(socket, new { type = "button", button = "left", down = false, copy = false }); await Task.Delay(200);
+                Check(Clipboard.GetText() == copied, "canceled drag does not change clipboard");
+            }
+            finally { if (clipboard != null) { try { Clipboard.SetDataObject(clipboard, true); } catch (ExternalException) { } } }
             Cursor.Position = textbox.PointToScreen(new Point(100, 100));
             var before = Cursor.Position;
             await Send(socket, new { type = "move", dx = 15, dy = 10 }); await Task.Delay(150);
             Check(Cursor.Position != before, "pointer movement injected");
             Cursor.Position = before;
+            await Task.Delay(SystemInformation.DoubleClickTime + 100);
+            Check(GetForegroundWindow() == form.Handle, "click target remains foreground");
             int clicks = 0, rightClicks = 0, wheels = 0;
             textbox.MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) clicks++; if (e.Button == MouseButtons.Right) rightClicks++; };
             textbox.MouseWheel += (_, _) => wheels++;
-            await Send(socket, new { type = "click", button = "left" }); await Task.Delay(150);
-            Check(clicks == 1, "left click injected");
-            await Send(socket, new { type = "click", button = "right" }); await Task.Delay(150);
-            Check(rightClicks == 1, "right click injected");
+            await Send(socket, new { type = "click", button = "left" }); await WaitFor(() => clicks > 0);
+            Check(clicks == 1, $"left click injected (count={clicks})");
+            await Send(socket, new { type = "click", button = "right" }); await WaitFor(() => rightClicks > 0);
+            Check(rightClicks == 1, $"right click injected (count={rightClicks})");
             // Dismiss the native context menu before testing scrolling.
             await Send(socket, new { type = "key", key = "escape" }); await Task.Delay(100);
-            await Send(socket, new { type = "scroll", dy = 120 }); await Task.Delay(150);
+            await Send(socket, new { type = "scroll", dy = 120 }); await WaitFor(() => wheels > 0);
             Check(wheels > 0, "wheel scrolling injected");
             await Send(socket, new { type = "button", button = "left", down = true }); await Task.Delay(100);
             Check((GetAsyncKeyState(1) & 0x8000) != 0, "drag button held");

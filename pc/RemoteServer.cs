@@ -116,7 +116,7 @@ internal sealed class RemoteServer
                         case "move": input.Move(Number(root, "dx"), Number(root, "dy")); break;
                         case "scroll": input.Scroll(Number(root, "dy")); break;
                         case "click": input.Click(root.GetProperty("button").GetString()!); break;
-                        case "button": input.Button(root.GetProperty("button").GetString()!, root.GetProperty("down").GetBoolean()); break;
+                        case "button": input.Button(root.GetProperty("button").GetString()!, root.GetProperty("down").GetBoolean(), !root.TryGetProperty("copy", out var copy) || copy.GetBoolean()); break;
                         case "release": input.ReleaseAll(); break;
                         case "key": input.Press(root.GetProperty("key").GetString()!); break;
                         case "text":
