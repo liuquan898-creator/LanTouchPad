@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+**/build/
+dist/
+.tools/
+*.user
+*.keystore
+*.jks
+key.properties
+local.properties
+*.log
+.DS_Store
