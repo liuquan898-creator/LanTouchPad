@@ -1,4 +1,4 @@
-#define AppVersion "1.0.1"
+#define AppVersion "1.0.3"
 [Setup]
 AppId={{09E9BBBD-567E-4C31-9BE3-434511A6842A}
 AppName=LanTouchPad

@@ -4,19 +4,37 @@ using System.Net.WebSockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using LanTouchPad;
 
 internal static class Program
 {
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
+    [StructLayout(LayoutKind.Sequential)] private struct HookPoint { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] private struct MouseHookData { public HookPoint Point; public uint Data, Flags, Time; public UIntPtr Extra; }
+    private delegate IntPtr MouseHook(int code, IntPtr message, IntPtr data);
+    [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SetWindowsHookEx(int id, MouseHook callback, IntPtr module, uint thread);
+    [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hook);
+    [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr message, IntPtr data);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string? module);
     private static int code;
+    private static int controlPort = 45832, discoveryPort = 45831;
+    private static bool isolated;
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         Console.SetOut(new StreamWriter(Path.Combine(AppContext.BaseDirectory, "smoke-report.txt")) { AutoFlush = true });
         Console.SetError(Console.Out);
         ApplicationConfiguration.Initialize();
+        isolated = args.Contains("--isolated");
+        RemoteServer? localServer = null;
+        if (isolated)
+        {
+            controlPort += 10; discoveryPort += 10;
+            localServer = new RemoteServer(controlPort, discoveryPort, "127.0.0.1");
+            localServer.StartAsync().GetAwaiter().GetResult();
+        }
         using var form = new Form { Text = "LanTouchPad input verification - click here to start", Width = 600, Height = 320, StartPosition = FormStartPosition.CenterScreen, TopMost = true };
         var textbox = new TextBox { Multiline = true, Dock = DockStyle.Fill, Font = new Font("Microsoft YaHei UI", 16) };
         form.Controls.Add(textbox);
@@ -27,14 +45,15 @@ internal static class Program
                 Console.WriteLine("Waiting for test window focus...");
                 for (int i = 0; i < 900 && GetForegroundWindow() != form.Handle; i++) await Task.Delay(100);
                 Check(GetForegroundWindow() == form.Handle, "test window is foreground");
-                form.TopMost = false;
                 textbox.Focus();
                 await Verify(form, textbox); Console.WriteLine("PASS: all desktop integration checks");
             }
             catch (Exception e) { code = 1; Console.Error.WriteLine(e); }
             finally { form.Close(); }
         };
-        Application.Run(form); return code;
+        Application.Run(form);
+        localServer?.StopAsync().GetAwaiter().GetResult();
+        return code;
     }
     private static void Check(bool result, string message) { if (!result) throw new Exception(message); Console.WriteLine("PASS: " + message); }
     private static async Task WaitFor(Func<bool> condition)
@@ -51,22 +70,25 @@ internal static class Program
     private static async Task Verify(Form form, TextBox textbox)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-        var info = await http.GetStringAsync("http://127.0.0.1:45832/info");
+        var info = await http.GetStringAsync($"http://127.0.0.1:{controlPort}/info");
         Check(info.Contains("LanTouchPad"), "HTTP discovery metadata");
-        using var browser = new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:45832/info");
+        using var diagnostics = JsonDocument.Parse(await http.GetStringAsync($"http://127.0.0.1:{controlPort}/diagnostics"));
+        if (!isolated) Check(diagnostics.RootElement.GetProperty("administrator").GetBoolean(), "receiver runs as administrator");
+        Check(diagnostics.RootElement.GetProperty("desktop").GetString() == "Default", "receiver can access interactive desktop");
+        using var browser = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{controlPort}/info");
         browser.Headers.Add("Origin", "https://example.com");
         Check((await http.SendAsync(browser)).StatusCode == HttpStatusCode.Forbidden, "browser Origin rejected");
         using var udp = new UdpClient(0);
-        await udp.SendAsync(Encoding.UTF8.GetBytes("LANTOUCHPAD_DISCOVER_V1"), new IPEndPoint(IPAddress.Loopback, 45831));
+        await udp.SendAsync(Encoding.UTF8.GetBytes("LANTOUCHPAD_DISCOVER_V1"), new IPEndPoint(IPAddress.Loopback, discoveryPort));
         var discovery = await udp.ReceiveAsync().WaitAsync(TimeSpan.FromSeconds(3));
         Check(Encoding.UTF8.GetString(discovery.Buffer).Contains("LanTouchPad"), "UDP device discovery");
 
         using var socket = new ClientWebSocket();
-        await socket.ConnectAsync(new Uri("ws://127.0.0.1:45832/ws"), CancellationToken.None);
+        await socket.ConnectAsync(new Uri($"ws://127.0.0.1:{controlPort}/ws"), CancellationToken.None);
         Check((await Receive(socket)).GetProperty("protocol").GetInt32() == 1, "WebSocket protocol handshake");
         using var second = new ClientWebSocket();
         bool rejected = false;
-        try { await second.ConnectAsync(new Uri("ws://127.0.0.1:45832/ws"), CancellationToken.None); } catch (WebSocketException) { rejected = true; }
+        try { await second.ConnectAsync(new Uri($"ws://127.0.0.1:{controlPort}/ws"), CancellationToken.None); } catch (WebSocketException) { rejected = true; }
         Check(rejected, "second controller rejected");
 
         form.Activate(); SetForegroundWindow(form.Handle); textbox.Focus();
@@ -91,10 +113,10 @@ internal static class Program
                 try
                 {
                     modal.Activate(); SetForegroundWindow(modal.Handle); modalText.Focus(); await Task.Delay(200);
-                    Check(GetForegroundWindow() == modal.Handle && modalText.Focused, "elevated modal target has focus");
+                    Check(GetForegroundWindow() == modal.Handle && modalText.Focused, "modal target has focus");
                     await Send(socket, new { type = "text", text = "modal input", id = "modal" });
                     await Receive(socket); await Task.Delay(150);
-                    Check(modalText.Text == "modal input", "input reaches elevated modal dialog");
+                    Check(modalText.Text == "modal input", "input reaches modal dialog");
                     var previousCursor = Cursor.Position;
                     try
                     {
@@ -103,10 +125,12 @@ internal static class Program
                         Cursor.Position = modalText.PointToScreen(new Point(20, 10));
                         await Send(socket, new { type = "move", dx = 5, dy = 0 });
                         await WaitFor(() => Cursor.Position != modalText.PointToScreen(new Point(20, 10)));
-                        Check(Cursor.Position != modalText.PointToScreen(new Point(20, 10)), "pointer moves over elevated modal dialog");
+                        Check(Cursor.Position != modalText.PointToScreen(new Point(20, 10)), "pointer moves over modal dialog");
                         await Send(socket, new { type = "click", button = "left" });
                         await WaitFor(() => modalClicks > 0);
-                        Check(modalClicks == 1, $"click reaches elevated modal dialog (count={modalClicks})");
+                        Check(modalClicks == 1, $"click reaches modal dialog (count={modalClicks})");
+                        await WaitFor(() => (GetAsyncKeyState(1) & 0x8000) == 0);
+                        await Task.Delay(100);
                     }
                     finally { Cursor.Position = previousCursor; }
                 }
@@ -115,8 +139,12 @@ internal static class Program
             };
             modal.ShowDialog(form);
             if (modalError != null) throw modalError;
-            form.Activate(); textbox.Focus();
         }
+        form.Show(); form.Activate();
+        bool restored = SetForegroundWindow(form.Handle);
+        textbox.Focus();
+        await Task.Delay(200);
+        Check(GetForegroundWindow() == form.Handle && textbox.Focused, "parent input target restored after modal dialog");
 
         var origin = Cursor.Position;
         try
@@ -128,9 +156,13 @@ internal static class Program
                 textbox.Select(0,0);
                 Cursor.Position = textbox.PointToScreen(new Point(3,10));
                 await Send(socket, new { type = "button", button = "left", down = true });
-                await Send(socket, new { type = "move", dx = 140, dy = 0 }); await Task.Delay(150);
+                await WaitFor(() => (GetAsyncKeyState(1) & 0x8000) != 0);
+                Check((GetAsyncKeyState(1) & 0x8000) != 0, "selection starts with held left button");
+                await Send(socket, new { type = "move", dx = 20, dy = 0 }); await Task.Delay(150);
                 await Send(socket, new { type = "button", button = "left", down = false }); await Task.Delay(250);
-                Check(textbox.SelectedText.Length > 0 && Clipboard.GetText() == textbox.SelectedText, "left drag selection automatically copies to clipboard");
+                await WaitFor(() => textbox.SelectedText.Length > 0 && Clipboard.ContainsText() && Clipboard.GetText() == textbox.SelectedText);
+                Check(textbox.SelectedText.Length > 0 && Clipboard.GetText() == textbox.SelectedText,
+                    $"left drag selection automatically copies to clipboard (selectionLength={textbox.SelectionLength}, cursor={Cursor.Position}, textbox={textbox.RectangleToScreen(textbox.ClientRectangle)}, foreground={GetForegroundWindow() == form.Handle})");
                 var copied = Clipboard.GetText();
                 await Send(socket, new { type = "button", button = "left", down = true });
                 await Send(socket, new { type = "move", dx = 40, dy = 0 });
@@ -142,6 +174,52 @@ internal static class Program
             var before = Cursor.Position;
             await Send(socket, new { type = "move", dx = 15, dy = 10 }); await Task.Delay(150);
             Check(Cursor.Position != before, "pointer movement injected");
+            Cursor.Position = before;
+            int interceptedMoves = 0;
+            var hook = new MouseHook((code, message, data) =>
+            {
+                if (code >= 0 && message == (IntPtr)0x200 && GetForegroundWindow() == form.Handle &&
+                    (Marshal.PtrToStructure<MouseHookData>(data).Flags & 1) != 0)
+                {
+                    interceptedMoves++;
+                    return (IntPtr)1;
+                }
+                return CallNextHookEx(IntPtr.Zero, code, message, data);
+            });
+            var hookHandle = SetWindowsHookEx(14, hook, GetModuleHandle(null), 0);
+            Check(hookHandle != IntPtr.Zero, "isolated injected-movement filter installed");
+            try
+            {
+                for (int i = 0; i < 20 && Cursor.Position == before; i++)
+                {
+                    await Send(socket, new { type = "move", dx = 2, dy = 1 });
+                    await Task.Delay(20);
+                }
+                Check(interceptedMoves > 0, "filter intercepted the injected mouse movement");
+                Check(Cursor.Position.X > before.X && Cursor.Position.Y > before.Y, "cursor moves without physical input while injected movement is filtered");
+            }
+            finally { UnhookWindowsHookEx(hookHandle); GC.KeepAlive(hook); }
+            await Send(socket, new { type = "release" });
+            var originalBounds = form.Bounds;
+            var clipboardBeforeResize = Clipboard.ContainsText() ? Clipboard.GetText() : null;
+            try
+            {
+                Cursor.Position = new Point(form.Right - 2, form.Top + form.Height / 2);
+                await Send(socket, new { type = "button", button = "left", down = true });
+                await Task.Delay(100);
+                for (int i = 0; i < 6; i++)
+                {
+                    await Send(socket, new { type = "move", dx = 10, dy = 0 });
+                    await Task.Delay(20);
+                }
+            }
+            finally { await Send(socket, new { type = "button", button = "left", down = false }); }
+            await WaitFor(() => (GetAsyncKeyState(1) & 0x8000) == 0);
+            await Task.Delay(100);
+            await WaitFor(() => form.Width > originalBounds.Width + 20);
+            Check(form.Width > originalBounds.Width + 20, "dragging the native window border resizes the window");
+            Check((Clipboard.ContainsText() ? Clipboard.GetText() : null) == clipboardBeforeResize, "window resizing does not replace the clipboard");
+            form.Bounds = originalBounds;
             Cursor.Position = before;
             await Task.Delay(SystemInformation.DoubleClickTime + 100);
             Check(GetForegroundWindow() == form.Handle, "click target remains foreground");
@@ -164,7 +242,7 @@ internal static class Program
         finally { Cursor.Position = origin; }
 
         using var reconnect = new ClientWebSocket();
-        await reconnect.ConnectAsync(new Uri("ws://127.0.0.1:45832/ws"), CancellationToken.None); await Receive(reconnect);
+        await reconnect.ConnectAsync(new Uri($"ws://127.0.0.1:{controlPort}/ws"), CancellationToken.None); await Receive(reconnect);
         await reconnect.SendAsync(Encoding.UTF8.GetBytes("{"), WebSocketMessageType.Text, true, CancellationToken.None);
         Check((await Receive(reconnect)).GetProperty("type").GetString() == "error", "malformed messages handled without crashing");
         await Send(reconnect, new { type = "move", dx = "invalid", dy = 0 });

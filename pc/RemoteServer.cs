@@ -13,6 +13,12 @@ namespace LanTouchPad;
 internal sealed class RemoteServer
 {
     public const int Port = 45832, DiscoveryPort = 45831;
+    private readonly int controlPort, discoveryPort;
+    private readonly string listenHost;
+    public RemoteServer(int controlPort = Port, int discoveryPort = DiscoveryPort, string listenHost = "0.0.0.0")
+    {
+        this.controlPort = controlPort; this.discoveryPort = discoveryPort; this.listenHost = listenHost;
+    }
     public bool Running => app != null;
     public string? Peer { get; private set; }
     public event Action? StatusChanged;
@@ -21,7 +27,7 @@ internal sealed class RemoteServer
     private CancellationTokenSource? cancellation;
     private Task? discoveryTask;
     private readonly SemaphoreSlim controller = new(1, 1);
-    private byte[] Description => JsonSerializer.SerializeToUtf8Bytes(new { app = "LanTouchPad", protocol = 1, name = Environment.MachineName, port = Port });
+    private byte[] Description => JsonSerializer.SerializeToUtf8Bytes(new { app = "LanTouchPad", protocol = 1, name = Environment.MachineName, port = controlPort, version = typeof(Program).Assembly.GetName().Version?.ToString() });
 
     internal static bool IsLocal(IPAddress? address)
     {
@@ -37,7 +43,7 @@ internal sealed class RemoteServer
         if (Running) return;
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
-        builder.WebHost.UseUrls($"http://0.0.0.0:{Port}");
+        builder.WebHost.UseUrls($"http://{listenHost}:{controlPort}");
         var next = builder.Build();
         var stop = new CancellationTokenSource();
         next.UseWebSockets();
@@ -47,13 +53,18 @@ internal sealed class RemoteServer
             await following(ctx);
         });
         next.MapGet("/info", () => Results.Bytes(Description, "application/json"));
+        next.MapGet("/diagnostics", (HttpContext ctx) =>
+            ctx.Connection.RemoteIpAddress is { } ip && IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip)
+                ? Results.Json(InputDiagnostics.Capture())
+                : Results.StatusCode(403));
         next.Map("/ws", ctx => HandleSocket(ctx, stop.Token));
         try
         {
-            udp = new UdpClient(new IPEndPoint(IPAddress.Any, DiscoveryPort));
+            udp = new UdpClient(new IPEndPoint(IPAddress.Parse(listenHost), discoveryPort));
             await next.StartAsync(stop.Token);
             app = next; cancellation = stop;
             discoveryTask = Task.Run(() => Discover(udp, stop.Token));
+            InputDiagnostics.Record("receiver-started", new { movement = "relative-input-with-stall-recovery" });
             StatusChanged?.Invoke();
         }
         catch { udp?.Dispose(); udp = null; stop.Dispose(); await next.DisposeAsync(); throw; }

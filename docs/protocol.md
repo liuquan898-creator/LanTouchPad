@@ -8,6 +8,8 @@ Discovery: send UTF-8 `LANTOUCHPAD_DISCOVER_V1` to UDP port 45831 (broadcast or 
 
 `GET http://PC:45832/info` returns the same JSON. Connect to `ws://PC:45832/ws`; the first message is the metadata above. A second controller receives HTTP 409. Browser requests containing an `Origin` header receive HTTP 403. There is no authentication or encryption.
 
+PC 1.0.2 adds a `version` field to discovery metadata and exposes `GET /diagnostics` to loopback clients only. Diagnostics contain the receiver version, elevation, foreground process name, input desktop and cursor bounds; no input text is recorded.
+
 Each WebSocket text message is one JSON object:
 
 | Type | Fields | Behavior |

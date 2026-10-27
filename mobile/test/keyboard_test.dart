@@ -88,7 +88,7 @@ void main() {
     await tester.enterText(find.byType(TextField), '你好');
     await tester.testTextInput.receiveAction(TextInputAction.send);
     await tester.pump();
-    expect(remote.commands, ['text:你好']);
+    expect(remote.commands, ['text:你好', 'key:enter']);
     expect(draft(tester).text, isEmpty);
     expect(find.byType(KeyboardInput), findsOneWidget);
     expect(
@@ -126,7 +126,12 @@ void main() {
     await native(tester, 'submit');
     await native(tester, 'key', 'backspace');
     await native(tester, 'key', 'delete');
-    expect(remote.commands, ['text:输入法文字', 'key:backspace', 'key:delete']);
+    expect(remote.commands, [
+      'text:输入法文字',
+      'key:enter',
+      'key:backspace',
+      'key:delete',
+    ]);
     expect(draft(tester).text, isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
@@ -142,10 +147,16 @@ void main() {
     expect(remote.commands, ['text:第一条']);
     remote.acknowledgements[0].complete(true);
     await tester.pump();
-    expect(remote.commands, ['text:第一条', 'text:第二条']);
+    expect(remote.commands, ['text:第一条', 'key:enter', 'text:第二条']);
     remote.acknowledgements[1].complete(true);
     await tester.pump();
-    expect(remote.commands, ['text:第一条', 'text:第二条', 'key:backspace']);
+    expect(remote.commands, [
+      'text:第一条',
+      'key:enter',
+      'text:第二条',
+      'key:enter',
+      'key:backspace',
+    ]);
     await tester.pumpWidget(const SizedBox());
   });
   testWidgets(
@@ -164,4 +175,10 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+  testWidgets('IME action on empty draft sends Enter once', (tester) async {
+    final remote = await mount(tester);
+    await native(tester, 'submit');
+    expect(remote.commands, ['key:enter']);
+    await tester.pumpWidget(const SizedBox());
+  });
 }

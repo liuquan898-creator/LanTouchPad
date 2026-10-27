@@ -34,7 +34,7 @@ internal sealed class MainForm : Form
 
     public MainForm(bool background)
     {
-        Text = "LanTouchPad 1.0.1";
+        Text = "LanTouchPad 1.0.3";
         ClientSize = new Size(560, 390);
         MinimumSize = new Size(560, 430);
         Font = new Font("Microsoft YaHei UI", 10);
@@ -50,6 +50,19 @@ internal sealed class MainForm : Form
         startup.CheckedChanged += (_, _) => { try { Startup.Set(startup.Checked); } catch (Exception e) { MessageBox.Show(e.Message, "无法修改开机启动"); } };
         var menu = new ContextMenuStrip();
         menu.Items.Add("打开 LanTouchPad", null, (_, _) => ShowWindow());
+        menu.Items.Add("输入诊断日志", null, (_, _) =>
+        {
+            try
+            {
+                if (File.Exists(InputDiagnostics.LogPath))
+                {
+                    var start = new System.Diagnostics.ProcessStartInfo("notepad.exe") { UseShellExecute = true };
+                    start.ArgumentList.Add(InputDiagnostics.LogPath);
+                    System.Diagnostics.Process.Start(start);
+                }
+            }
+            catch (Exception e) { MessageBox.Show(e.Message, "无法打开诊断日志"); }
+        });
         menu.Items.Add("退出", null, (_, _) => { exiting = true; Close(); });
         tray = new NotifyIcon { Icon = Icon, Text = "LanTouchPad", ContextMenuStrip = menu, Visible = true };
         tray.DoubleClick += (_, _) => ShowWindow();

@@ -521,10 +521,13 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  Future<void> sendText() async {
-    if (draft.text.isEmpty || !remote.connected) return;
-    outgoing.add((text: draft.text, key: null));
-    draft.clear();
+  Future<void> sendText({bool submit = false}) async {
+    if (!remote.connected || (draft.text.isEmpty && !submit)) return;
+    if (draft.text.isNotEmpty) {
+      outgoing.add((text: draft.text, key: null));
+      draft.clear();
+    }
+    if (submit) outgoing.add((text: null, key: 'enter'));
     if (sending) return;
     setState(() => sending = true);
     while (outgoing.isNotEmpty) {
@@ -708,7 +711,7 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                               child: KeyboardInput(
                                 controller: draft,
                                 canSend: remote.connected,
-                                onSend: sendText,
+                                onSend: () => sendText(submit: true),
                                 onKey: key,
                               ),
                             ),
