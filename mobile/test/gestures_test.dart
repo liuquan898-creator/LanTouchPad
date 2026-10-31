@@ -48,6 +48,117 @@ void main() {
     await finger.up(timeStamp: timestamp(tester));
   }
 
+  for (final right in [false, true]) {
+    testWidgets(
+      '${right ? 'right' : 'left'} edge scrolls and stays scrolling inward',
+      (tester) async {
+        final remote = await mount(tester);
+        final width = tester.getSize(find.byType(TouchSurface)).width;
+        final finger = await downAt(
+          tester,
+          Offset(right ? width - 10 : 10, 100),
+        );
+        await finger.moveBy(Offset(right ? -100 : 100, 40));
+        await tester.pump(const Duration(milliseconds: 20));
+        expect(remote.messages.single, {'type': 'scroll', 'dy': 48.0});
+        await finger.moveBy(const Offset(0, -20));
+        await finger.up(timeStamp: timestamp(tester));
+        expect(remote.messages.last, {'type': 'scroll', 'dy': -24.0});
+        expect(remote.messages.length, 2);
+        await tester.pumpWidget(const SizedBox());
+        remote.dispose();
+      },
+    );
+  }
+
+  testWidgets('edge taps, double taps and holds never click or drag', (
+    tester,
+  ) async {
+    final remote = await mount(tester);
+    for (final x in [10.0, 790.0]) {
+      await tapAt(tester, Offset(x, 100));
+      await tester.pump(const Duration(milliseconds: 80));
+      final finger = await downAt(tester, Offset(x, 100));
+      await tester.pump(const Duration(milliseconds: 600));
+      await finger.up(timeStamp: timestamp(tester));
+    }
+    expect(remote.messages, isEmpty);
+    // An edge touch also clears a pending central double tap.
+    await tapAt(tester, const Offset(80, 100));
+    await tapAt(tester, const Offset(10, 100));
+    await tapAt(tester, const Offset(80, 100));
+    expect(remote.messages, [
+      {'type': 'click', 'button': 'left'},
+      {'type': 'click', 'button': 'left'},
+    ]);
+    await tester.pumpWidget(const SizedBox());
+    remote.dispose();
+  });
+
+  testWidgets('central movement and drag stay pointer gestures across edges', (
+    tester,
+  ) async {
+    final remote = await mount(tester);
+    for (final right in [false, true]) {
+      final start = Offset(right ? 700 : 100, 100);
+      final end = Offset(right ? 790 : 10, 140);
+      final finger = await downAt(tester, start);
+      await finger.moveTo(end);
+      await finger.up(timeStamp: timestamp(tester));
+      expect(remote.messages.single, {
+        'type': 'move',
+        'dx': (end.dx - start.dx) * 2,
+        'dy': 80.0,
+      });
+      remote.messages.clear();
+      await tapAt(tester, start);
+      await tester.pump(const Duration(milliseconds: 80));
+      final drag = await downAt(tester, start);
+      await drag.moveTo(end);
+      await drag.up(timeStamp: timestamp(tester));
+      expect(remote.messages.map((m) => m['type']), [
+        'click',
+        'button',
+        'move',
+        'button',
+      ]);
+      expect(remote.messages.last['copy'], isTrue);
+      remote.messages.clear();
+    }
+    await tester.pumpWidget(const SizedBox());
+    remote.dispose();
+  });
+
+  testWidgets('edge cancellation and disconnect reset the gesture mode', (
+    tester,
+  ) async {
+    final remote = await mount(tester);
+    final canceled = await downAt(tester, const Offset(10, 100));
+    await canceled.moveBy(const Offset(0, 40));
+    await canceled.cancel();
+    expect(remote.messages.single['type'], 'scroll');
+    remote.messages.clear();
+    final interrupted = await downAt(tester, const Offset(790, 100));
+    await interrupted.moveBy(const Offset(0, 20));
+    remote.connected = false;
+    Future<void> rebuild() => tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: TouchSurface(remote: remote, sensitivity: 2)),
+      ),
+    );
+    await rebuild();
+    await interrupted.moveBy(const Offset(0, 20));
+    await interrupted.up();
+    await tester.pump(const Duration(milliseconds: 20));
+    expect(remote.messages, isEmpty);
+    remote.connected = true;
+    await rebuild();
+    await tapAt(tester, const Offset(100, 100));
+    expect(remote.messages.single, {'type': 'click', 'button': 'left'});
+    await tester.pumpWidget(const SizedBox());
+    remote.dispose();
+  });
+
   testWidgets('tap, double tap and movement produce expected actions', (
     tester,
   ) async {
@@ -273,7 +384,7 @@ void main() {
       );
       await tester.pump();
       final padFinger = await tester.startGesture(
-        const Offset(100, 100),
+        const Offset(10, 100),
         pointer: 3,
       );
       await padFinger.moveBy(const Offset(60, 20));
@@ -281,6 +392,12 @@ void main() {
       await padFinger.up();
       expect(remote.messages.where((m) => m['type'] == 'button').length, 1);
       expect(remote.messages.any((m) => m['type'] == 'click'), isFalse);
+      expect(remote.messages.where((m) => m['type'] == 'move').single, {
+        'type': 'move',
+        'dx': 60.0,
+        'dy': 20.0,
+      });
+      expect(remote.messages.any((m) => m['type'] == 'scroll'), isFalse);
       await buttonFinger.up();
       expect(remote.messages.last['down'], false);
       await tester.pumpWidget(const SizedBox());

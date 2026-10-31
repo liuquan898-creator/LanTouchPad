@@ -916,6 +916,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
   double scroll = 0, distance = 0;
   bool dragging = false;
   bool externalDrag = false;
+  bool edgeScrolling = false;
   int maxFingers = 0;
   Duration started = Duration.zero;
   Duration? lastTapUp;
@@ -935,6 +936,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
     if (!widget.remote.connected) reset();
     if (widget.leftHeld && points.isNotEmpty) {
       externalDrag = true;
+      edgeScrolling = false;
       hold?.cancel();
     }
   }
@@ -963,6 +965,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
     scroll = 0;
     dragging = false;
     externalDrag = false;
+    edgeScrolling = false;
     maxFingers = 0;
     lastTapUp = null;
     lastTapPosition = null;
@@ -982,7 +985,9 @@ class _TouchSurfaceState extends State<TouchSurface> {
     super.dispose();
   }
 
-  void down(PointerDownEvent event) {
+  double edgeWidth(double width) => math.min(36, width * .1);
+
+  void down(PointerDownEvent event, double width) {
     widget.onTouch?.call();
     if (!widget.remote.connected) return;
     if (points.isEmpty) {
@@ -990,9 +995,15 @@ class _TouchSurfaceState extends State<TouchSurface> {
       distance = 0;
       maxFingers = 0;
       externalDrag = widget.leftHeld;
+      // Lock the gesture to its starting region until all fingers lift.
+      edgeScrolling =
+          !externalDrag &&
+          (event.localPosition.dx < edgeWidth(width) ||
+              event.localPosition.dx >= width - edgeWidth(width));
       final gap = lastTapUp == null ? null : started - lastTapUp!;
       final doubleTap =
           !externalDrag &&
+          !edgeScrolling &&
           gap != null &&
           gap >= Duration.zero &&
           gap <= kDoubleTapTimeout &&
@@ -1002,7 +1013,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
       lastTapPosition = null;
       if (doubleTap) {
         startDrag();
-      } else {
+      } else if (!edgeScrolling && !externalDrag) {
         hold = Timer(const Duration(milliseconds: 450), () {
           if (!externalDrag &&
               points.length == 1 &&
@@ -1038,7 +1049,9 @@ class _TouchSurfaceState extends State<TouchSurface> {
     points[event.pointer] = event.localPosition;
     distance += delta.distance;
     if (distance >= 8) hold?.cancel();
-    if (points.length == 1 && maxFingers == 1) {
+    if (edgeScrolling) {
+      scroll += delta.dy * 1.2;
+    } else if (points.length == 1 && maxFingers == 1) {
       movement += delta * widget.sensitivity;
     } else if (points.length == 2) {
       scroll += delta.dy * 1.2;
@@ -1060,6 +1073,7 @@ class _TouchSurfaceState extends State<TouchSurface> {
           'copy': !cancel,
         });
       } else if (!externalDrag &&
+          !edgeScrolling &&
           !cancel &&
           maxFingers <= 2 &&
           distance < 10 &&
@@ -1075,45 +1089,70 @@ class _TouchSurfaceState extends State<TouchSurface> {
       }
       dragging = false;
       externalDrag = false;
+      edgeScrolling = false;
       maxFingers = 0;
     }
     setState(() {});
   }
 
   @override
-  Widget build(BuildContext context) => Listener(
-    behavior: HitTestBehavior.opaque,
-    onPointerDown: down,
-    onPointerMove: move,
-    onPointerUp: up,
-    onPointerCancel: (event) => up(event, cancel: true),
-    child: ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: ColoredBox(
-        color: const Color(0xffe8eff1),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            CustomPaint(
-              painter: SurfacePainter(
-                points.values.toList(),
-                dragging || widget.leftHeld,
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) => Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (event) => down(event, constraints.maxWidth),
+      onPointerMove: move,
+      onPointerUp: up,
+      onPointerCancel: (event) => up(event, cancel: true),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: ColoredBox(
+          color: const Color(0xffe8eff1),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              for (final right in [false, true])
+                Positioned(
+                  left: right ? null : 0,
+                  right: right ? 0 : null,
+                  top: 0,
+                  bottom: 0,
+                  width: edgeWidth(constraints.maxWidth),
+                  child: const ColoredBox(
+                    color: Color(0xffd8e5e8),
+                    child: Center(
+                      child: Icon(
+                        Icons.swap_vert,
+                        color: Color(0xff71848a),
+                        size: 22,
+                      ),
+                    ),
+                  ),
+                ),
+              CustomPaint(
+                painter: SurfacePainter(
+                  points.values.toList(),
+                  dragging || widget.leftHeld,
+                ),
               ),
-            ),
-            if (!widget.remote.connected)
-              const Center(
-                child: Icon(Icons.wifi_off, color: Color(0xff71848a), size: 40),
+              if (!widget.remote.connected)
+                const Center(
+                  child: Icon(
+                    Icons.wifi_off,
+                    color: Color(0xff71848a),
+                    size: 40,
+                  ),
+                ),
+              Positioned(
+                left: edgeWidth(constraints.maxWidth) + 12,
+                bottom: 16,
+                child: Icon(
+                  dragging ? Icons.pan_tool_alt : Icons.touch_app_outlined,
+                  color: const Color(0xff71848a),
+                  size: 24,
+                ),
               ),
-            Positioned(
-              left: 18,
-              bottom: 16,
-              child: Icon(
-                dragging ? Icons.pan_tool_alt : Icons.touch_app_outlined,
-                color: const Color(0xff71848a),
-                size: 24,
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     ),
