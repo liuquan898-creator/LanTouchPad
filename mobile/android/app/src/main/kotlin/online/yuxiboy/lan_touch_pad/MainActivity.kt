@@ -15,6 +15,18 @@ class MainActivity : FlutterActivity() {
                     if (call.arguments == true) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                     result.success(null)
+                } else if (call.method == "getScrollSpeed") {
+                    val preferences = getSharedPreferences("controls", MODE_PRIVATE)
+                    result.success(preferences.getFloat("scrollSpeed", 2f).toDouble())
+                } else if (call.method == "setScrollSpeed") {
+                    val speed = (call.arguments as? Number)?.toDouble()
+                    if (speed == null || !speed.isFinite() || speed < .5 || speed > 5) {
+                        result.error("invalid_speed", "Scroll speed must be between 0.5 and 5", null)
+                    } else {
+                        getSharedPreferences("controls", MODE_PRIVATE).edit()
+                            .putFloat("scrollSpeed", speed.toFloat()).apply()
+                        result.success(null)
+                    }
                 } else result.notImplemented()
             }
     }

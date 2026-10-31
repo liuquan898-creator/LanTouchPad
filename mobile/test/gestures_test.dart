@@ -60,10 +60,10 @@ void main() {
         );
         await finger.moveBy(Offset(right ? -100 : 100, 40));
         await tester.pump(const Duration(milliseconds: 20));
-        expect(remote.messages.single, {'type': 'scroll', 'dy': 48.0});
+        expect(remote.messages.single, {'type': 'scroll', 'dy': 96.0});
         await finger.moveBy(const Offset(0, -20));
         await finger.up(timeStamp: timestamp(tester));
-        expect(remote.messages.last, {'type': 'scroll', 'dy': -24.0});
+        expect(remote.messages.last, {'type': 'scroll', 'dy': -48.0});
         expect(remote.messages.length, 2);
         await tester.pumpWidget(const SizedBox());
         remote.dispose();

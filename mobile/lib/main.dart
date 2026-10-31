@@ -9,6 +9,7 @@ import 'keyboard_input.dart';
 
 const discoveryPort = 45831, controlPort = 45832;
 const platform = MethodChannel('online.yuxiboy.lantouchpad/device');
+const defaultScrollSpeed = 2.0;
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -476,6 +477,8 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   bool leftHeld = false;
   final List<({String? text, String? key})> outgoing = [];
   double sensitivity = 1.6;
+  double scrollSpeed = defaultScrollSpeed;
+  bool scrollSpeedEdited = false;
   @override
   void initState() {
     super.initState();
@@ -484,6 +487,35 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
       ..onError = showError;
     remote.addListener(update);
     remote.connect();
+    loadScrollSpeed();
+  }
+
+  Future<void> loadScrollSpeed() async {
+    try {
+      final saved = await platform.invokeMethod<num>('getScrollSpeed');
+      if (mounted &&
+          !scrollSpeedEdited &&
+          saved != null &&
+          saved.isFinite &&
+          saved >= .5 &&
+          saved <= 5) {
+        setState(() => scrollSpeed = saved.toDouble());
+      }
+    } on PlatformException {
+      // Keep the default if local preferences cannot be read.
+    } on MissingPluginException {
+      // Other platforms can use the default without Android preferences.
+    }
+  }
+
+  Future<void> saveScrollSpeed(double value) async {
+    try {
+      await platform.invokeMethod<void>('setScrollSpeed', value);
+    } on PlatformException {
+      showError('滚轮速度保存失败，请重试');
+    } on MissingPluginException {
+      showError('当前平台不支持保存滚轮速度');
+    }
   }
 
   void update() {
@@ -555,9 +587,10 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   Future<void> settings() async {
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       builder: (context) => StatefulBuilder(
         builder: (context, updateSheet) => SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -580,6 +613,32 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                 ),
                 Text(
                   '${sensitivity.toStringAsFixed(1)}×',
+                  style: const TextStyle(color: Color(0xff71848a)),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  '滚轮速度',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+                ),
+                Slider(
+                  key: const ValueKey('scroll-speed'),
+                  value: scrollSpeed,
+                  min: .5,
+                  max: 5,
+                  divisions: 18,
+                  label: '${scrollSpeed.toStringAsFixed(2)}×',
+                  semanticFormatterCallback: (value) => '滚轮速度 $value 倍',
+                  onChanged: (value) {
+                    setState(() {
+                      scrollSpeedEdited = true;
+                      scrollSpeed = value;
+                    });
+                    updateSheet(() {});
+                  },
+                  onChangeEnd: saveScrollSpeed,
+                ),
+                Text(
+                  '${scrollSpeed.toStringAsFixed(2)}×',
                   style: const TextStyle(color: Color(0xff71848a)),
                 ),
               ],
@@ -629,7 +688,7 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
       ),
       actions: [
         IconButton(
-          tooltip: '指针速度',
+          tooltip: '设置',
           onPressed: settings,
           icon: const Icon(Icons.tune),
         ),
@@ -652,6 +711,7 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                       key: surface,
                       remote: remote,
                       sensitivity: sensitivity,
+                      scrollSpeed: scrollSpeed,
                       leftHeld: leftHeld,
                       onTouch: hideKeyboard,
                     ),
@@ -898,11 +958,13 @@ class TouchSurface extends StatefulWidget {
     super.key,
     required this.remote,
     required this.sensitivity,
+    this.scrollSpeed = defaultScrollSpeed,
     this.leftHeld = false,
     this.onTouch,
   });
   final RemoteConnection remote;
   final double sensitivity;
+  final double scrollSpeed;
   final bool leftHeld;
   final VoidCallback? onTouch;
   @override
@@ -1050,11 +1112,11 @@ class _TouchSurfaceState extends State<TouchSurface> {
     distance += delta.distance;
     if (distance >= 8) hold?.cancel();
     if (edgeScrolling) {
-      scroll += delta.dy * 1.2;
+      scroll += delta.dy * 1.2 * widget.scrollSpeed;
     } else if (points.length == 1 && maxFingers == 1) {
       movement += delta * widget.sensitivity;
     } else if (points.length == 2) {
-      scroll += delta.dy * 1.2;
+      scroll += delta.dy * 1.2 * widget.scrollSpeed;
     }
     setState(() {});
   }
