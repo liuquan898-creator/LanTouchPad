@@ -472,9 +472,7 @@ class ControlPage extends StatefulWidget {
 class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   late final RemoteConnection remote;
   final draft = TextEditingController();
-  final surface = GlobalKey<_TouchSurfaceState>();
   bool keyboard = false, sending = false;
-  bool leftHeld = false;
   final List<({String? text, String? key})> outgoing = [];
   double sensitivity = 1.6;
   double scrollSpeed = defaultScrollSpeed;
@@ -519,11 +517,7 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
   }
 
   void update() {
-    if (mounted) {
-      setState(() {
-        if (!remote.connected) leftHeld = false;
-      });
-    }
+    if (mounted) setState(() {});
   }
 
   void showError(String text) {
@@ -708,56 +702,31 @@ class _ControlPageState extends State<ControlPage> with WidgetsBindingObserver {
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                     child: TouchSurface(
-                      key: surface,
                       remote: remote,
                       sensitivity: sensitivity,
                       scrollSpeed: scrollSpeed,
-                      leftHeld: leftHeld,
                       onTouch: hideKeyboard,
                     ),
                   ),
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: MouseButton(
-                          remote: remote,
-                          button: 'left',
-                          icon: Icons.mouse_outlined,
-                          label: '左键',
-                          onHold: (held) => setState(() => leftHeld = held),
-                          beforeRelease: () =>
-                              surface.currentState?.flushInput(),
-                          onMove: (delta) =>
-                              surface.currentState?.moveBy(delta * sensitivity),
-                        ),
+                  child: SizedBox(
+                    width: double.infinity,
+                    height: 56,
+                    child: IconButton.filledTonal(
+                      tooltip: '文字输入',
+                      onPressed: () {
+                        if (keyboard) {
+                          hideKeyboard();
+                        } else {
+                          setState(() => keyboard = true);
+                        }
+                      },
+                      icon: Icon(
+                        keyboard ? Icons.keyboard_hide : Icons.keyboard,
                       ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: MouseButton(
-                          remote: remote,
-                          button: 'right',
-                          icon: Icons.more_horiz,
-                          label: '右键',
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton.filledTonal(
-                        tooltip: '文字输入',
-                        onPressed: () {
-                          if (keyboard) {
-                            hideKeyboard();
-                          } else {
-                            setState(() => keyboard = true);
-                          }
-                        },
-                        icon: Icon(
-                          keyboard ? Icons.keyboard_hide : Icons.keyboard,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
                 if (keyboard)

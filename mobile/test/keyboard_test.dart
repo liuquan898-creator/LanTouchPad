@@ -82,7 +82,16 @@ void main() {
   ) async {
     final remote = await mount(tester, openKeyboard: false);
     expect(find.byType(KeyboardInput), findsNothing);
-    await tester.tap(find.byTooltip('文字输入'));
+    expect(find.byType(MouseButton), findsNothing);
+    final keyboardButton = tester.getRect(find.byTooltip('文字输入'));
+    expect(
+      keyboardButton.width,
+      tester.getSize(find.byType(TouchSurface)).width,
+    );
+    expect(keyboardButton.height, 56);
+    await tester.tapAt(
+      Offset(keyboardButton.left + 12, keyboardButton.center.dy),
+    );
     await tester.pump();
     expect(find.byType(KeyboardInput), findsOneWidget);
     await tester.enterText(find.byType(TextField), '你好');
