@@ -9,6 +9,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <Compile Include="..\..\pc\NativeInput.cs" Link="Receiver\NativeInput.cs" />
+    <Compile Include="..\..\pc\DesktopInput.cs" Link="Receiver\DesktopInput.cs" />
     <Compile Include="..\..\pc\InputDiagnostics.cs" Link="Receiver\InputDiagnostics.cs" />
     <Compile Include="..\..\pc\RemoteServer.cs" Link="Receiver\RemoteServer.cs" />
   </ItemGroup>

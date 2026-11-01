@@ -1,6 +1,9 @@
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using Microsoft.Win32;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.ServiceProcess;
 
 namespace LanTouchPad;
 
@@ -19,6 +22,11 @@ internal static class Startup
     {
         get
         {
+            if (Installed)
+            {
+                using var receiver = new ServiceController(ReceiverService.Name);
+                return receiver.StartType == ServiceStartMode.Automatic;
+            }
             dynamic service = Connect();
             try
             {
@@ -38,6 +46,67 @@ internal static class Startup
 
     public static void Set(bool enabled)
     {
+        if (Installed) Sc("config", ReceiverService.Name, "start=", enabled ? "auto" : "demand");
+        SetTrayTask(enabled);
+    }
+
+    public static bool Installed
+    {
+        get
+        {
+            using var receiver = new ServiceController(ReceiverService.Name);
+            try { _ = receiver.Status; return true; }
+            catch (InvalidOperationException e) when (e.InnerException is Win32Exception { NativeErrorCode: 1060 }) { return false; }
+        }
+    }
+
+    private static void Sc(params string[] arguments)
+    {
+        var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "sc.exe"))
+        { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        string output = process.StandardOutput.ReadToEnd(), error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        if (process.ExitCode != 0) throw new InvalidOperationException($"Windows service operation failed ({process.ExitCode}): {output} {error}");
+    }
+
+    public static void Install()
+    {
+        if (!Installed)
+            Sc("create", ReceiverService.Name, "binPath=", $"\"{Environment.ProcessPath}\" --service", "start=", "auto", "obj=", "LocalSystem", "DisplayName=", "LanTouchPad");
+        else
+            Sc("config", ReceiverService.Name, "binPath=", $"\"{Environment.ProcessPath}\" --service", "obj=", "LocalSystem");
+        Sc("description", ReceiverService.Name, "LAN touchpad receiver for the local Windows console, including the sign-in screen.");
+        Sc("failure", ReceiverService.Name, "reset=", "86400", "actions=", "restart/5000/restart/15000/restart/30000");
+    }
+
+    public static void StartService()
+    {
+        using var receiver = new ServiceController(ReceiverService.Name);
+        if (receiver.Status == ServiceControllerStatus.StopPending) receiver.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(15));
+        receiver.Refresh();
+        if (receiver.Status == ServiceControllerStatus.Stopped) receiver.Start();
+        receiver.WaitForStatus(ServiceControllerStatus.Running, TimeSpan.FromSeconds(15));
+    }
+
+    public static void StopService()
+    {
+        if (!Installed) return;
+        using var receiver = new ServiceController(ReceiverService.Name);
+        if (receiver.Status == ServiceControllerStatus.Stopped) return;
+        if (receiver.Status != ServiceControllerStatus.StopPending) receiver.Stop();
+        receiver.WaitForStatus(ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
+    }
+
+    public static void Uninstall()
+    {
+        SetTrayTask(false);
+        if (Installed) { StopService(); Sc("delete", ReceiverService.Name); }
+    }
+
+    private static void SetTrayTask(bool enabled)
+    {
         dynamic service = Connect();
         try
         {
@@ -54,7 +123,7 @@ internal static class Startup
                     dynamic definition = service.NewTask(0);
                     try
                     {
-                        definition.RegistrationInfo.Description = "Start LanTouchPad with elevated input access when this user signs in.";
+                        definition.RegistrationInfo.Description = "Open the LanTouchPad tray UI when this user signs in; the Windows service receives input independently.";
                         definition.Principal.UserId = UserSid;
                         definition.Principal.LogonType = 3; // InteractiveToken, no stored password.
                         definition.Principal.RunLevel = 1;

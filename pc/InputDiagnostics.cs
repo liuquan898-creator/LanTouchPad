@@ -16,6 +16,7 @@ internal static class InputDiagnostics
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
     [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr OpenDesktop(string name, uint flags, bool inherit, uint access);
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetUserObjectInformation(IntPtr obj, int index, StringBuilder name, int length, out int needed);
     private static readonly object Gate = new();
@@ -40,10 +41,18 @@ internal static class InputDiagnostics
             finally { CloseDesktop(desktop); }
         }
         using var identity = WindowsIdentity.GetCurrent();
+        var secureDesktop = OpenDesktop("Winlogon", 0, false, 0x10000000);
+        bool secureDesktopAccess = secureDesktop != IntPtr.Zero;
+        int secureDesktopError = secureDesktopAccess ? 0 : Marshal.GetLastWin32Error();
+        if (secureDesktopAccess) CloseDesktop(secureDesktop);
         return new
         {
             time = DateTimeOffset.Now,
             version = typeof(Program).Assembly.GetName().Version?.ToString(),
+            logPath = LogPath,
+            system = identity.IsSystem,
+            secureDesktopAccess, secureDesktopError,
+            session = Process.GetCurrentProcess().SessionId,
             administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator),
             desktop = desktopName.ToString(), desktopError,
             foregroundProcess = foreground, foregroundPid = foregroundId,

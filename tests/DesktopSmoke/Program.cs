@@ -32,7 +32,7 @@ internal static class Program
         if (isolated)
         {
             controlPort += 10; discoveryPort += 10;
-            localServer = new RemoteServer(controlPort, discoveryPort, "127.0.0.1");
+            localServer = new RemoteServer(controlPort, discoveryPort, "127.0.0.1", allowManagement: true);
             localServer.StartAsync().GetAwaiter().GetResult();
         }
         using var form = new Form { Text = "LanTouchPad input verification - click here to start", Width = 600, Height = 320, StartPosition = FormStartPosition.CenterScreen, TopMost = true };
@@ -43,7 +43,8 @@ internal static class Program
             try
             {
                 Console.WriteLine("Waiting for test window focus...");
-                for (int i = 0; i < 900 && GetForegroundWindow() != form.Handle; i++) await Task.Delay(100);
+                if (args.Contains("--automated")) { form.Activate(); SetForegroundWindow(form.Handle); textbox.Focus(); }
+                for (int i = 0; i < (args.Contains("--automated") ? 50 : 900) && GetForegroundWindow() != form.Handle; i++) await Task.Delay(100);
                 Check(GetForegroundWindow() == form.Handle, "test window is foreground");
                 textbox.Focus();
                 await Verify(form, textbox); Console.WriteLine("PASS: all desktop integration checks");
@@ -78,6 +79,21 @@ internal static class Program
         using var browser = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{controlPort}/info");
         browser.Headers.Add("Origin", "https://example.com");
         Check((await http.SendAsync(browser)).StatusCode == HttpStatusCode.Forbidden, "browser Origin rejected");
+        if (isolated)
+        {
+            using var pause = await http.PostAsync($"http://127.0.0.1:{controlPort}/receiver/pause", null);
+            Check(pause.IsSuccessStatusCode, "local receiver pause accepted");
+            using var blocked = new ClientWebSocket();
+            bool paused = false;
+            try { await blocked.ConnectAsync(new Uri($"ws://127.0.0.1:{controlPort}/ws"), CancellationToken.None); }
+            catch (WebSocketException) { paused = true; }
+            Check(paused, "paused receiver rejects controllers");
+            using var browserResume = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{controlPort}/receiver/resume");
+            browserResume.Headers.Add("Origin", "https://example.com");
+            Check((await http.SendAsync(browserResume)).StatusCode == HttpStatusCode.Forbidden, "browser cannot resume receiver");
+            using var resume = await http.PostAsync($"http://127.0.0.1:{controlPort}/receiver/resume", null);
+            Check(resume.IsSuccessStatusCode, "local receiver resume accepted");
+        }
         using var udp = new UdpClient(0);
         await udp.SendAsync(Encoding.UTF8.GetBytes("LANTOUCHPAD_DISCOVER_V1"), new IPEndPoint(IPAddress.Loopback, discoveryPort));
         var discovery = await udp.ReceiveAsync().WaitAsync(TimeSpan.FromSeconds(3));
@@ -95,7 +111,8 @@ internal static class Program
         await Task.Delay(350);
         Check(GetForegroundWindow() == form.Handle && textbox.Focused, "isolated input target has focus");
         await Send(socket, new { type = "text", text = "中文 Hello", id = "1" });
-        Check((await Receive(socket)).GetProperty("type").GetString() == "textAck", "text delivery acknowledged");
+        var textReply = await Receive(socket);
+        Check(textReply.GetProperty("type").GetString() == "textAck", "text delivery acknowledged: " + textReply);
         await Task.Delay(150);
         Check(textbox.Text == "中文 Hello", "Unicode text reached Windows textbox");
         await Send(socket, new { type = "key", key = "backspace" });
@@ -103,7 +120,7 @@ internal static class Program
         await Send(socket, new { type = "text", text = "\n第二行 😀", id = "2" }); await Receive(socket);
         await Task.Delay(150); Check(textbox.Text.Replace("\r", "") == "中文 Hell\n第二行 😀", "multiline and surrogate-pair Unicode input");
 
-        using (var modal = new Form { Text = "Modal input verification", Width = 420, Height = 200, StartPosition = FormStartPosition.CenterParent })
+        using (var modal = new Form { Text = "Modal input verification", Width = 420, Height = 200, StartPosition = FormStartPosition.CenterParent, TopMost = true })
         {
             var modalText = new TextBox { Dock = DockStyle.Top };
             modal.Controls.Add(modalText);
@@ -127,6 +144,9 @@ internal static class Program
                         await WaitFor(() => Cursor.Position != modalText.PointToScreen(new Point(20, 10)));
                         Check(Cursor.Position != modalText.PointToScreen(new Point(20, 10)), "pointer moves over modal dialog");
                         await Send(socket, new { type = "click", button = "left" });
+                        await Send(socket, new { type = "ping" });
+                        var clickReply = await Receive(socket);
+                        Check(clickReply.GetProperty("type").GetString() == "pong", "modal click input accepted: " + clickReply);
                         await WaitFor(() => modalClicks > 0);
                         Check(modalClicks == 1, $"click reaches modal dialog (count={modalClicks})");
                         await WaitFor(() => (GetAsyncKeyState(1) & 0x8000) == 0);

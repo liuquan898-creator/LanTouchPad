@@ -7,8 +7,9 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>..\assets\lantouchpad.ico</ApplicationIcon>
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
     <AssemblyName>LanTouchPad</AssemblyName>
   </PropertyGroup>
   <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" /></ItemGroup>
+  <ItemGroup><PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" /></ItemGroup>
 </Project>

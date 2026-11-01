@@ -15,9 +15,13 @@ internal sealed class RemoteServer
     public const int Port = 45832, DiscoveryPort = 45831;
     private readonly int controlPort, discoveryPort;
     private readonly string listenHost;
-    public RemoteServer(int controlPort = Port, int discoveryPort = DiscoveryPort, string listenHost = "0.0.0.0")
+    private readonly bool allowManagement;
+    private CancellationTokenSource? activeController;
+    private volatile bool paused;
+    public RemoteServer(int controlPort = Port, int discoveryPort = DiscoveryPort, string listenHost = "0.0.0.0", bool allowManagement = false)
     {
         this.controlPort = controlPort; this.discoveryPort = discoveryPort; this.listenHost = listenHost;
+        this.allowManagement = allowManagement;
     }
     public bool Running => app != null;
     public string? Peer { get; private set; }
@@ -57,6 +61,24 @@ internal sealed class RemoteServer
             ctx.Connection.RemoteIpAddress is { } ip && IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip)
                 ? Results.Json(InputDiagnostics.Capture())
                 : Results.StatusCode(403));
+        if (allowManagement)
+        {
+            next.MapGet("/receiver/state", (HttpContext ctx) => IsLoopback(ctx)
+                ? Results.Json(new { running = !paused, peer = Peer }) : Results.StatusCode(403));
+            next.MapPost("/receiver/pause", (HttpContext ctx) =>
+            {
+                if (!IsLoopback(ctx)) return Results.StatusCode(403);
+                paused = true;
+                lock (controller) activeController?.Cancel();
+                return Results.Ok();
+            });
+            next.MapPost("/receiver/resume", (HttpContext ctx) =>
+            {
+                if (!IsLoopback(ctx)) return Results.StatusCode(403);
+                paused = false;
+                return Results.Ok();
+            });
+        }
         next.Map("/ws", ctx => HandleSocket(ctx, stop.Token));
         try
         {
@@ -86,10 +108,16 @@ internal sealed class RemoteServer
 
     private async Task HandleSocket(HttpContext context, CancellationToken stopping)
     {
+        if (paused) { context.Response.StatusCode = 503; return; }
         if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = 400; return; }
         if (!await controller.WaitAsync(0, stopping)) { context.Response.StatusCode = 409; return; }
-        var input = new NativeInput();
+        using var input = new DesktopInput();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(stopping, context.RequestAborted);
+        lock (controller)
+        {
+            activeController = linked;
+            if (paused) linked.Cancel();
+        }
         WebSocket? socket = null;
         try
         {
@@ -148,10 +176,13 @@ internal sealed class RemoteServer
         finally
         {
             input.ReleaseAll();
+            lock (controller) activeController = null;
             if (socket != null && socket.State != WebSocketState.Closed) socket.Abort();
             socket?.Dispose(); Peer = null; controller.Release(); StatusChanged?.Invoke();
         }
     }
+    private static bool IsLoopback(HttpContext context) => context.Connection.RemoteIpAddress is { } ip &&
+        IPAddress.IsLoopback(ip.IsIPv4MappedToIPv6 ? ip.MapToIPv4() : ip);
     private static double Number(JsonElement root, string key)
     {
         double value = root.GetProperty(key).GetDouble();
